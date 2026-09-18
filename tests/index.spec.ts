@@ -1,11 +1,12 @@
 /**
- * dsh-prompt-inject 测试:
+ * dsh-prompt-inject 测试(单一通道):
  * - 设置卡注册(namespace prompt-inject);
- * - system 通道:section 文本随设置实时变化,空文本/关闭时为空;
- * - agy 通道:pre-step 注入一条 message(代际控制:同一用户输入不重复;
- *   下一条用户输入后再次注入);非 agy provider 不注入(避免与 system 重复)。
+ * - **所有 provider** 统一走 pre-step message 注入(不再有 system section);
+ * - 代际:同一输入的多步不重复;新用户输入 / 父代理续派(agent-message)
+ *   之后重新注入;
+ * - 空文本/关闭开关不注入;settings 服务缺失时回退插件行内 config。
  */
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Message, UserMessage } from '@deepseek-ai/dsh-llm'
@@ -13,15 +14,14 @@ import { apply, PROMPT_INJECT_NAMESPACE } from '../src/index.ts'
 
 interface SectionDef {
   name?: string
-  order?: number
   text?: () => string
 }
 
-/** 假 ctx:捕获 section 注册与 pre-step 处理器;settings 由参数决定。 */
+/** 假 ctx:捕获设置卡注册与 pre-step 处理器,并记录是否注册过 system section。 */
 function setup(settings?: { enabled?: boolean; text?: string }): {
   section: SectionDef | undefined
   namespace: string | undefined
-  preStep: ((payload: { agent: { options: { provider?: string } } }, next: () => Promise<{ kind: string; messages: Message[] }>) => Promise<{ kind: string; messages: Message[] }>) | undefined
+  preStep: ((payload: unknown, next: () => Promise<{ kind: string; messages: Message[] }>) => Promise<{ kind: string; messages: Message[] }>) | undefined
 } {
   let section: SectionDef | undefined
   let namespace: string | undefined
@@ -57,94 +57,70 @@ function userMessage(id: string, text: string): UserMessage {
   return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } as never })
 }
 
-/** 跑一次 pre-step(provider 决定走哪条通道)。 */
+/** 父代理派发的消息(agent-message)。 */
+function dispatchedMessage(text: string): UserMessage {
+  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'agent-message' } as never })
+}
+
+/** 跑一次 pre-step。 */
 async function runPreStep(
   preStep: ReturnType<typeof setup>['preStep'],
-  provider: string,
   messages: Message[],
 ): Promise<Message[]> {
   const result = await preStep!(
-    { agent: { options: { provider } } },
+    { agent: { options: { provider: 'x' } }, messages },
     async () => ({ kind: 'enter', messages }),
   )
   return result.messages
 }
 
-describe('dsh-prompt-inject:设置卡与 system 通道', () => {
-  it('注册 prompt-inject 设置卡与 section(order 5)', () => {
+/** 取注入消息(按 source.plugin 识别)。 */
+function injections(messages: readonly Message[]): UserMessage[] {
+  return messages.filter(m => (m.source as { plugin?: string }).plugin === 'prompt-inject') as UserMessage[]
+}
+
+describe('dsh-prompt-inject:单一通道', () => {
+  it('注册 prompt-inject 设置卡;不再注册 system section(单通道)', () => {
     const { section, namespace } = setup({ text: 'x' })
     expect(namespace).toBe(PROMPT_INJECT_NAMESPACE)
-    expect(section?.name).toBe('inject:global-prompt')
-    expect(section?.order).toBe(5)
+    expect(section).toBeUndefined()
   })
 
-  it('system 文本随设置实时变化;空文本/关闭时为空串', () => {
-    // 空文本 → ''
-    const emptySetup = setup({ enabled: true, text: '   ' })
-    expect(emptySetup.section?.text?.()).toBe('')
-    // 有文本 → 含包装与内容
-    const withText = setup({ enabled: true, text: '永远用中文回答' })
-    const text = withText.section?.text?.() ?? ''
-    expect(text).toContain('用户自定义指令')
-    expect(text).toContain('永远用中文回答')
-    // 关闭 → ''
-    const disabled = setup({ enabled: false, text: '永远用中文回答' })
-    expect(disabled.section?.text?.()).toBe('')
-  })
-})
-
-describe('dsh-prompt-inject:agy 通道(pre-step message 注入)', () => {
-  it('provider=agy:追加上一条注入消息(role user,插件标记)', async () => {
+  it('任意 provider 统一注入一条消息(role user,插件标记)', async () => {
     const { preStep } = setup({ enabled: true, text: '每条回复末尾加"喵"' })
-    const messages: Message[] = [userMessage('u1', '你好')]
-    const after = await runPreStep(preStep, 'agy', messages)
+    const after = await runPreStep(preStep, [userMessage('u1', '你好')])
     expect(after).toHaveLength(2)
-    const injected = after[1] as UserMessage
-    expect(injected.role).toBe('user')
-    expect((injected.source as { plugin?: string }).plugin).toBe('prompt-inject')
-    expect(injected.content).toEqual([{ type: 'text', text: '每条回复末尾加"喵"' }])
+    const injected = injections(after)
+    expect(injected).toHaveLength(1)
+    expect(injected[0]!.role).toBe('user')
+    expect(injected[0]!.content).toEqual([{ type: 'text', text: '每条回复末尾加"喵"' }])
   })
 
-  it('同一用户输入代际内不重复注入(多步工具循环只带一条)', async () => {
+  it('同一输入代际内不重复;新用户输入后再次注入', async () => {
     const { preStep } = setup({ enabled: true, text: 'X 规则' })
-    const first = await runPreStep(preStep, 'agy', [userMessage('u1', '你好')])
-    // 第二步:消息里已有注入(在最后一条用户消息之后)→ 不再追加。
-    const second = await runPreStep(preStep, 'agy', first)
-    expect(second).toHaveLength(first.length)
-    // 下一条用户输入之后 → 再次注入(对新输入也生效)。
+    const first = await runPreStep(preStep, [userMessage('u1', '你好')])
+    const second = await runPreStep(preStep, first)
+    expect(injections(second)).toHaveLength(1) // 多步不累积
     const nextUser = [...second, userMessage('u2', '继续')]
-    const third = await runPreStep(preStep, 'agy', nextUser)
-    expect(third).toHaveLength(nextUser.length + 1)
+    const third = await runPreStep(preStep, nextUser)
+    expect(injections(third)).toHaveLength(2) // 新输入后再注入一条
   })
 
   it('父代理续派(agent-message)后同样重新注入——子代理每条输入都带', async () => {
     const { preStep } = setup({ enabled: true, text: 'X 规则' })
-    const first = await runPreStep(preStep, 'agy', [userMessage('u1', '初始任务')])
-    expect(first).toHaveLength(2) // 首条任务后注入一条
-    // 父代理续派一条 agent-message:子代理的新输入 → 应再次注入。
-    const dispatched = createUserMessage({
-      content: [{ type: 'text', text: '继续改这个文件' }],
-      source: { kind: 'agent-message' } as never,
-    })
-    const second = await runPreStep(preStep, 'agy', [...first, dispatched])
-    expect(second).toHaveLength(first.length + 2) // agent-message + 新注入
-    // 同一输入的后续步仍不重复。
-    const third = await runPreStep(preStep, 'agy', second)
-    expect(third).toHaveLength(second.length)
-  })
-
-  it('provider≠agy:不注入(该路径由 system 通道覆盖,避免双份)', async () => {
-    const { preStep } = setup({ enabled: true, text: 'X 规则' })
-    const messages: Message[] = [userMessage('u1', '你好')]
-    const after = await runPreStep(preStep, 'deepseek', messages)
-    expect(after).toHaveLength(1)
+    const first = await runPreStep(preStep, [userMessage('u1', '初始任务')])
+    expect(injections(first)).toHaveLength(1)
+    const second = await runPreStep(preStep, [...first, dispatchedMessage('继续改这个文件')])
+    expect(injections(second)).toHaveLength(2)
+    const third = await runPreStep(preStep, second)
+    expect(injections(third)).toHaveLength(2) // 同输入后续步不重复
   })
 
   it('空文本 / 关闭开关:不注入', async () => {
     const emptyText = setup({ enabled: true, text: '  ' })
-    expect(await runPreStep(emptyText.preStep, 'agy', [userMessage('u1', 'hi')])).toHaveLength(1)
+    expect(await runPreStep(emptyText.preStep, [userMessage('u1', 'hi')])).toHaveLength(1)
     const disabled = setup({ enabled: false, text: 'X' })
-    expect(await runPreStep(disabled.preStep, 'agy', [userMessage('u1', 'hi')])).toHaveLength(1)
+    expect(await runPreStep(disabled.preStep, [userMessage('u1', 'hi')])).toHaveLength(1)
   })
 
   it('settings 服务缺失时回退插件行内 config', async () => {
@@ -155,9 +131,8 @@ describe('dsh-prompt-inject:agy 通道(pre-step message 注入)', () => {
       on: (event: string, handler: never) => { if (event === 'agent/pre-step') preStep = handler },
     } as unknown as Context
     apply(ctx, { text: '行内配置规则' })
-    const after = await runPreStep(preStep, 'agy', [userMessage('u1', 'hi')])
-    expect(after).toHaveLength(2)
-    expect((after[1] as UserMessage).content).toEqual([{ type: 'text', text: '行内配置规则' }])
-    void vi
+    const after = await runPreStep(preStep, [userMessage('u1', 'hi')])
+    expect(injections(after)).toHaveLength(1)
+    expect(injections(after)[0]!.content).toEqual([{ type: 'text', text: '行内配置规则' }])
   })
 })

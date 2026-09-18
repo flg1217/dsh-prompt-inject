@@ -1,17 +1,19 @@
 /**
  * 全局提示词注入(设置面板可配):对每条用户输入生效,覆盖所有 agent 与
- * 所有 provider——主对话、codebuddy 桥子代理、agy 驱动子代理都带上。
+ * 所有 provider——主对话、codebuddy 桥子代理、agy 驱动子代理。
  *
- * 双通道(按路径分流,避免重复):
- * - **systemPrompt.section**(默认通道):所有走 dsh 组装 system 的路径——
- *   主对话各 provider、codebuddy 子代理(桥把 dsh system 透传给 CLI)。
- *   system 每步 assemble 一次、只有一份,天然不重复;CLI 内部子代理也能
- *   看到(system 在它们的提示里)。
- * - **agent/pre-step message 注入**(agy 通道):provider === 'agy' 的 agent
- *   ——AGY 是完整 harness,不看 dsh 组装的 system;注入的 message 会进
- *   messages,被 llm-agy 适配器序列化补发(含 agy 会话的增量续跑)。
- *   按"用户消息代际"注入:最后一个真实用户消息之后已注入过就跳过,
- *   多步工具循环不会重复累积。
+ * **单一通道**:`agent/pre-step` 注入一条 message(agent 级事件,全部 agent
+ * 统一走这里):
+ * - AGY 看不到 dsh 的 system(完整 harness 自带系统提示词),消息注入是
+ *   唯一可行的载体;
+ * - codebuddy 桥的原生同类工具已并入 dsh 通道(Bash/Edit/… 白名单硬移除、
+ *   子代理强引导走 dsh_subagent),codebuddy/deepseek 也不再走 system
+ *   section——保持单一机制,少一条平行实现;
+ * - 注入消息 source={kind:'plugin',plugin:'prompt-inject'},在会话界面以
+ *   "上下文注入"卡片呈现,不进普通对话流;
+ * - **代际**:每条输入之后注入一条——输入边界 = 真实用户消息(kind=user)
+ *   或父代理派发(kind=agent-message,子代理的每条续派都会重新注入);
+ *   同一条输入的多步工具循环不重复累积;压缩把注入挤掉后自动重注。
  *
  * 设置(namespace `prompt-inject`,面板实时生效):
  * - enabled:总开关(默认开);
