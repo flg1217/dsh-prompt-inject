@@ -11,9 +11,12 @@
  *   section——保持单一机制,少一条平行实现;
  * - 注入消息 source={kind:'plugin',plugin:'prompt-inject'},在会话界面以
  *   "上下文注入"卡片呈现,不进普通对话流;
- * - **代际**:每条输入之后注入一条——输入边界 = 真实用户消息(kind=user)
- *   或父代理派发(kind=agent-message,子代理的每条续派都会重新注入);
- *   同一条输入的多步工具循环不重复累积;压缩把注入挤掉后自动重注。
+ * - **时机**(读 dsh 源码后修正,2026-09-18):pre-step 的 messages 是**本步
+ *   从 inbox 认领的新消息**,不是完整历史——判定=**认领到真实输入就注入**
+ *   (kind=user 用户消息 / kind=agent-message 父代理派发)。inbox 认领是
+ *   消费式:每条输入恰好一个 step 认领,天然"每条输入一份";同一条输入的
+ *   多步工具循环(tool 结果 kind=tool)不再注入(此前按"扫历史找注入标记"
+ *   判定恒真,导致每次工具调用后都重复注入——实测回归)。
  *
  * 设置(namespace `prompt-inject`,面板实时生效):
  * - enabled:总开关(默认开);
@@ -45,21 +48,20 @@ export interface Config {
 const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'prompt-inject' } as const
 
 /**
- * 上次注入在这条输入之后?——找最后一条"输入边界"与最后一条注入的位置。
- * 输入边界 = 真实用户消息(kind=user)与父代理派发(kind=agent-message):
- * 子代理的每条续派都会重新注入,而不是只在首条任务后注一次;
- * 压缩把注入挤掉(lastInjectAt 消失)后同样自愈重注。
+ * 本步认领的新消息里是否含"新输入"?——pre-step 的 messages 是**本步从
+ * inbox 认领的新消息**(agent-loop 的 inbox.claim),**不是完整历史**:
+ * 上一轮注入的消息不会出现在下一步的列表里(实测:按"扫历史找注入标记"
+ * 判定会恒真——每次工具调用后都重复注入)。
+ *
+ * 输入边界 = 真实用户消息(kind=user)与父代理派发(kind=agent-message)。
+ * 每条输入只被一个 step 认领一次,因此"含输入即注入"恰好保证:
+ * 每条输入一份——同一条输入的多步工具循环(tool 结果 kind=tool)不再注入。
  */
-function needsInject(messages: readonly Message[]): boolean {
-  let lastInputAt = -1
-  let lastInjectAt = -1
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index]!
+function hasNewInput(messages: readonly Message[]): boolean {
+  return messages.some(message => {
     const kind = message.source.kind as string
-    if (message.role === 'user' && (kind === 'user' || kind === 'agent-message')) lastInputAt = index
-    if ((message.source as { plugin?: unknown }).plugin === PLUGIN_SOURCE.plugin) lastInjectAt = index
-  }
-  return lastInjectAt <= lastInputAt
+    return message.role === 'user' && (kind === 'user' || kind === 'agent-message')
+  })
 }
 
 export function apply(ctx: Context, config: Config = {}): void {
@@ -84,13 +86,14 @@ export function apply(ctx: Context, config: Config = {}): void {
     })
   })
 
-  // 唯一注入通道:所有 agent 的 pre-step——每条输入后追加一条注入消息。
+  // 唯一注入通道:所有 agent 的 pre-step——本步认领到"新输入"时追加一条
+  // (inbox 认领是消费式:每条输入恰好被一个 step 认领,天然不重复)。
   ctx.on('agent/pre-step', async (_payload, next) => {
     const downstream = await next()
     const { enabled, text } = read()
     if (!enabled || text.length === 0) return downstream
     if (downstream.kind !== 'enter') return downstream
-    if (!needsInject(downstream.messages)) return downstream
+    if (!hasNewInput(downstream.messages)) return downstream
     const ours = createUserMessage({
       content: [{ type: 'text', text }],
       source: PLUGIN_SOURCE as never,

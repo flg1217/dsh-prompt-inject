@@ -1,9 +1,9 @@
 /**
- * dsh-prompt-inject 测试(单一通道):
- * - 设置卡注册(namespace prompt-inject);
- * - **所有 provider** 统一走 pre-step message 注入(不再有 system section);
- * - 代际:同一输入的多步不重复;新用户输入 / 父代理续派(agent-message)
- *   之后重新注入;
+ * dsh-prompt-inject 测试(单一通道,pre-step 认领语义):
+ * - 设置卡注册(namespace prompt-inject);不注册 system section;
+ * - **本步认领到新输入**(kind=user 真实用户 / kind=agent-message 父代理派发)
+ *   才注入——每条输入恰好一份;
+ * - **工具结果步不注入**(kind=tool;修复"每次工具调用后都重复注入"的回归);
  * - 空文本/关闭开关不注入;settings 服务缺失时回退插件行内 config。
  */
 import { describe, expect, it } from 'vitest'
@@ -52,75 +52,77 @@ function setup(settings?: { enabled?: boolean; text?: string }): {
   return { section, namespace, preStep }
 }
 
-/** 一条真实用户消息。 */
+/** 真实用户消息(kind=user)。 */
 function userMessage(id: string, text: string): UserMessage {
   return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } as never })
 }
 
-/** 父代理派发的消息(agent-message)。 */
+/** 父代理派发(kind=agent-message)。 */
 function dispatchedMessage(text: string): UserMessage {
   return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'agent-message' } as never })
 }
 
-/** 跑一次 pre-step。 */
+/** 工具结果消息(kind=tool)——同一条输入的多步循环里 step 认领的就是它。 */
+function toolResultMessage(callId: string): UserMessage {
+  return createUserMessage({
+    content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text: 'ok' }] }],
+    source: { kind: 'tool', callId } as never,
+  })
+}
+
+/** 跑一次 pre-step(claimed = 本步认领的新消息)。 */
 async function runPreStep(
   preStep: ReturnType<typeof setup>['preStep'],
-  messages: Message[],
-): Promise<Message[]> {
+  claimed: Message[],
+): Promise<{ messages: Message[]; injected: UserMessage[] }> {
   const result = await preStep!(
-    { agent: { options: { provider: 'x' } }, messages },
-    async () => ({ kind: 'enter', messages }),
+    { messages: claimed },
+    async () => ({ kind: 'enter', messages: claimed }),
   )
-  return result.messages
+  const injected = result.messages.filter(
+    m => (m.source as { plugin?: string }).plugin === 'prompt-inject',
+  ) as UserMessage[]
+  return { messages: result.messages, injected }
 }
 
-/** 取注入消息(按 source.plugin 识别)。 */
-function injections(messages: readonly Message[]): UserMessage[] {
-  return messages.filter(m => (m.source as { plugin?: string }).plugin === 'prompt-inject') as UserMessage[]
-}
-
-describe('dsh-prompt-inject:单一通道', () => {
-  it('注册 prompt-inject 设置卡;不再注册 system section(单通道)', () => {
+describe('dsh-prompt-inject:pre-step 认领语义', () => {
+  it('注册 prompt-inject 设置卡;不注册 system section(单通道)', () => {
     const { section, namespace } = setup({ text: 'x' })
     expect(namespace).toBe(PROMPT_INJECT_NAMESPACE)
     expect(section).toBeUndefined()
   })
 
-  it('任意 provider 统一注入一条消息(role user,插件标记)', async () => {
+  it('认领到用户消息 → 追加一条注入(插件标记)', async () => {
     const { preStep } = setup({ enabled: true, text: '每条回复末尾加"喵"' })
-    const after = await runPreStep(preStep, [userMessage('u1', '你好')])
-    expect(after).toHaveLength(2)
-    const injected = injections(after)
+    const { injected } = await runPreStep(preStep, [userMessage('u1', '你好')])
     expect(injected).toHaveLength(1)
     expect(injected[0]!.role).toBe('user')
     expect(injected[0]!.content).toEqual([{ type: 'text', text: '每条回复末尾加"喵"' }])
   })
 
-  it('同一输入代际内不重复;新用户输入后再次注入', async () => {
+  it('只认领到工具结果 → 不注入(回归:不再每次工具调用后重复注入)', async () => {
     const { preStep } = setup({ enabled: true, text: 'X 规则' })
-    const first = await runPreStep(preStep, [userMessage('u1', '你好')])
-    const second = await runPreStep(preStep, first)
-    expect(injections(second)).toHaveLength(1) // 多步不累积
-    const nextUser = [...second, userMessage('u2', '继续')]
-    const third = await runPreStep(preStep, nextUser)
-    expect(injections(third)).toHaveLength(2) // 新输入后再注入一条
+    // 一条输入之后,同一条输入的多步工具循环:每个 step 认领的是 tool 结果。
+    const step1 = await runPreStep(preStep, [toolResultMessage('c1')])
+    expect(step1.injected).toHaveLength(0)
+    const step2 = await runPreStep(preStep, [toolResultMessage('c2')])
+    expect(step2.injected).toHaveLength(0)
+    // 空认领(收尾步)同样不注入。
+    const step3 = await runPreStep(preStep, [])
+    expect(step3.injected).toHaveLength(0)
   })
 
-  it('父代理续派(agent-message)后同样重新注入——子代理每条输入都带', async () => {
+  it('认领到父代理派发(agent-message) → 注入(子代理每条续派都带)', async () => {
     const { preStep } = setup({ enabled: true, text: 'X 规则' })
-    const first = await runPreStep(preStep, [userMessage('u1', '初始任务')])
-    expect(injections(first)).toHaveLength(1)
-    const second = await runPreStep(preStep, [...first, dispatchedMessage('继续改这个文件')])
-    expect(injections(second)).toHaveLength(2)
-    const third = await runPreStep(preStep, second)
-    expect(injections(third)).toHaveLength(2) // 同输入后续步不重复
+    const { injected } = await runPreStep(preStep, [dispatchedMessage('继续改这个文件')])
+    expect(injected).toHaveLength(1)
   })
 
   it('空文本 / 关闭开关:不注入', async () => {
     const emptyText = setup({ enabled: true, text: '  ' })
-    expect(await runPreStep(emptyText.preStep, [userMessage('u1', 'hi')])).toHaveLength(1)
+    expect((await runPreStep(emptyText.preStep, [userMessage('u1', 'hi')])).injected).toHaveLength(0)
     const disabled = setup({ enabled: false, text: 'X' })
-    expect(await runPreStep(disabled.preStep, [userMessage('u1', 'hi')])).toHaveLength(1)
+    expect((await runPreStep(disabled.preStep, [userMessage('u1', 'hi')])).injected).toHaveLength(0)
   })
 
   it('settings 服务缺失时回退插件行内 config', async () => {
@@ -131,8 +133,8 @@ describe('dsh-prompt-inject:单一通道', () => {
       on: (event: string, handler: never) => { if (event === 'agent/pre-step') preStep = handler },
     } as unknown as Context
     apply(ctx, { text: '行内配置规则' })
-    const after = await runPreStep(preStep, [userMessage('u1', 'hi')])
-    expect(injections(after)).toHaveLength(1)
-    expect(injections(after)[0]!.content).toEqual([{ type: 'text', text: '行内配置规则' }])
+    const { injected } = await runPreStep(preStep, [userMessage('u1', 'hi')])
+    expect(injected).toHaveLength(1)
+    expect(injected[0]!.content).toEqual([{ type: 'text', text: '行内配置规则' }])
   })
 })
