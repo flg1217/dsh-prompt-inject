@@ -1,0 +1,11 @@
+# @flg1217/dsh-prompt-inject bundle patch: inserts the plugin row into the web
+# profile roster. Applied as a profile bundle layer (the `dsh.bundle.patch`
+# manifest field) over dsh-base; activate with
+# `dsh plugin --profile <name> add link:...` or npm install.
+#
+# 行为:设置面板出现 "promptInject" 卡(开关 + 注入文本);
+# 文本对所有用户输入生效(主对话/codebuddy 子代理走 system;agy 走 pre-step
+# message 注入,由 llm-agy 适配器序列化补发)。
+- insert:
+    - id: prompt-inject
+      name: '@flg1217/dsh-prompt-inject'
