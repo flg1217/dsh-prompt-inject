@@ -117,6 +117,22 @@ describe('dsh-prompt-inject:agy 通道(pre-step message 注入)', () => {
     expect(third).toHaveLength(nextUser.length + 1)
   })
 
+  it('父代理续派(agent-message)后同样重新注入——子代理每条输入都带', async () => {
+    const { preStep } = setup({ enabled: true, text: 'X 规则' })
+    const first = await runPreStep(preStep, 'agy', [userMessage('u1', '初始任务')])
+    expect(first).toHaveLength(2) // 首条任务后注入一条
+    // 父代理续派一条 agent-message:子代理的新输入 → 应再次注入。
+    const dispatched = createUserMessage({
+      content: [{ type: 'text', text: '继续改这个文件' }],
+      source: { kind: 'agent-message' } as never,
+    })
+    const second = await runPreStep(preStep, 'agy', [...first, dispatched])
+    expect(second).toHaveLength(first.length + 2) // agent-message + 新注入
+    // 同一输入的后续步仍不重复。
+    const third = await runPreStep(preStep, 'agy', second)
+    expect(third).toHaveLength(second.length)
+  })
+
   it('provider≠agy:不注入(该路径由 system 通道覆盖,避免双份)', async () => {
     const { preStep } = setup({ enabled: true, text: 'X 规则' })
     const messages: Message[] = [userMessage('u1', '你好')]

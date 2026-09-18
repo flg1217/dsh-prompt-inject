@@ -47,16 +47,20 @@ function injectedText(text: string): string {
   return `用户自定义指令(随每条输入下发,必须遵守):\n${text}`
 }
 
-/** 上次注入在这条消息之后?——从尾部找两种位置。 */
+/** 上次注入在这条消息之后?——从尾部找两种位置。
+ * 代际边界 = 真实用户输入(kind=user)**与父代理派发(kind=agent-message)**:
+ * 子代理的每条输入(含父代理续派的新任务)都要在其后确认一次注入,
+ * 而不是只在首条任务后注一次——压缩把注入挤掉后同样自愈重注。 */
 function needsInject(messages: readonly Message[]): boolean {
-  let lastUserAt = -1
+  let lastInputAt = -1
   let lastInjectAt = -1
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]!
-    if (message.role === 'user' && message.source.kind === 'user') lastUserAt = index
+    const kind = message.source.kind as string
+    if (message.role === 'user' && (kind === 'user' || kind === 'agent-message')) lastInputAt = index
     if ((message.source as { plugin?: unknown }).plugin === PLUGIN_SOURCE.plugin) lastInjectAt = index
   }
-  return lastInjectAt <= lastUserAt
+  return lastInjectAt <= lastInputAt
 }
 
 export function apply(ctx: Context, config: Config = {}): void {
