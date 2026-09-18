@@ -20,20 +20,24 @@
  *
  * 设置(namespace `prompt-inject`,面板实时生效):
  * - enabled:总开关(默认开);
- * - text:注入文本(默认空——空等于不注入,填上即生效)。
+ * - text:全局注入文本(留空不注入);
+ * - workspaces:每工作区附加文本(键=workspaceId;host 按本会话 cwd 经
+ *   workspaceRegistry.resolveByPath 匹配——子代理继承父 cwd,故同工作区的
+ *   子代理同样带上)。注入时全局与工作区两段合并为**一条**消息
+ *   (【全局指令】/【工作区指令】小标题区分),两段皆空则不注入。
  * @module dsh-prompt-inject
  */
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 export declare const PROMPT_INJECT_NAMESPACE = "prompt-inject";
-/** 设置表单 schema(namespace `prompt-inject`)。 */
-export declare const PromptInjectConfig: z<Schemastery.ObjectS<{
-    enabled: z<boolean, boolean>;
-    text: z<string, string>;
-}>, Schemastery.ObjectT<{
-    enabled: z<boolean, boolean>;
-    text: z<string, string>;
-}>>;
+/** 设置值的结构化面(namespace `prompt-inject`)。 */
+export interface PromptInjectSettings {
+    enabled: boolean;
+    text: string;
+    workspaces: Record<string, string>;
+}
+/** 设置表单 schema(namespace `prompt-inject`)。显式 z<T> 注解:z.dict 的推断类型不可移植(TS2742)。 */
+export declare const PromptInjectConfig: z<PromptInjectSettings>;
 export interface Config {
     /** 兼容字段:插件行内配置(面板设置优先)。 */
     text?: string;

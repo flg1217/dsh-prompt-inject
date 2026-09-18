@@ -20,7 +20,11 @@
  *
  * 设置(namespace `prompt-inject`,面板实时生效):
  * - enabled:总开关(默认开);
- * - text:注入文本(默认空——空等于不注入,填上即生效)。
+ * - text:全局注入文本(留空不注入);
+ * - workspaces:每工作区附加文本(键=workspaceId;host 按本会话 cwd 经
+ *   workspaceRegistry.resolveByPath 匹配——子代理继承父 cwd,故同工作区的
+ *   子代理同样带上)。注入时全局与工作区两段合并为**一条**消息
+ *   (【全局指令】/【工作区指令】小标题区分),两段皆空则不注入。
  * @module dsh-prompt-inject
  */
 
@@ -33,10 +37,19 @@ import type {} from '@deepseek-ai/dsh-agent'
 
 export const PROMPT_INJECT_NAMESPACE = 'prompt-inject'
 
-/** 设置表单 schema(namespace `prompt-inject`)。 */
-export const PromptInjectConfig = z.object({
+/** 设置值的结构化面(namespace `prompt-inject`)。 */
+export interface PromptInjectSettings {
+  enabled: boolean
+  text: string
+  workspaces: Record<string, string>
+}
+
+/** 设置表单 schema(namespace `prompt-inject`)。显式 z<T> 注解:z.dict 的推断类型不可移植(TS2742)。 */
+export const PromptInjectConfig: z<PromptInjectSettings> = z.object({
   enabled: z.boolean().default(true).description('启用全局提示词注入'),
-  text: z.string().default('').description('每次输入随行注入的提示词(留空不注入)'),
+  text: z.string().default('').description('全局注入文本:对所有会话生效(留空不注入)'),
+  workspaces: z.dict(z.string()).default({})
+    .description('工作区附加注入:键为 workspaceId,值为该工作区附加指令(留空=无附加)'),
 })
 
 export interface Config {
@@ -64,15 +77,69 @@ function hasNewInput(messages: readonly Message[]): boolean {
   })
 }
 
+/** 当前生效设置的面(从 settings namespace 现值 + 行内回退)。 */
+interface EffectiveConfig {
+  enabled: boolean
+  text: string
+  workspaces: Record<string, string>
+}
+
+/** 工作区注册表的读取面(只取所需字段;服务可能未挂载)。 */
+interface WorkspaceLookup {
+  resolveByPath?: (path: string) => Promise<{ id: string } | undefined>
+}
+
+/**
+ * 当前会话 cwd 所属工作区的附加文本——全链路防御,任何一步失败都回退空串:
+ * 服务缺失 / cwd 缺失 / 目录不存在 / 相对路径(realpath 抛错)/ 该工作区未配置。
+ * resolveByPath 内部已做 realpath 归一,插件不做二次处理(避免 Windows
+ * 大小写/symlink 分歧)。**本函数绝不抛错**(抛错会 reject pre-step 打断整轮)。
+ */
+async function workspaceTextFor(
+  ctx: Context,
+  workspaces: Record<string, string>,
+  cwd: string | undefined,
+): Promise<string> {
+  if (cwd === undefined || cwd === '') return ''
+  try {
+    const registry = ctx.get('workspaceRegistry') as WorkspaceLookup | undefined
+    const resolved = await registry?.resolveByPath?.(cwd)
+    if (resolved === undefined) return ''
+    const value = workspaces[resolved.id]
+    return typeof value === 'string' ? value.trim() : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 全局 + 工作区两段文本合并为**一条**注入(空段丢弃;各带一行小标题区分,
+ * 让模型知道后者更具体);两段皆空时返回空串(调用方据此跳过注入)。
+ */
+function joinSections(globalText: string, workspaceText: string): string {
+  const global = globalText.trim()
+  const workspace = workspaceText.trim()
+  const parts: string[] = []
+  if (global.length > 0) parts.push(`【全局指令】\n${global}`)
+  if (workspace.length > 0) parts.push(`【工作区指令】\n${workspace}`)
+  return parts.join('\n\n')
+}
+
 export function apply(ctx: Context, config: Config = {}): void {
-  /** 当前生效配置:面板设置优先,回退插件行内 config。 */
-  const read = (): { enabled: boolean; text: string } => {
+  /** 当前生效配置:面板设置优先,回退插件行内 config(逐值防御手工编辑)。 */
+  const read = (): EffectiveConfig => {
     const settings = ctx.get('settings') as
-      | { get?: (ns: string) => { enabled?: boolean; text?: string } | undefined }
+      | { get?: (ns: string) => { enabled?: boolean; text?: string; workspaces?: unknown } | undefined }
       | undefined
     const value = settings?.get?.(PROMPT_INJECT_NAMESPACE)
     const text = (value?.text ?? config.text ?? '').trim()
-    return { enabled: value?.enabled !== false, text }
+    const workspaces: Record<string, string> = {}
+    if (value?.workspaces !== null && typeof value?.workspaces === 'object') {
+      for (const [id, item] of Object.entries(value.workspaces as Record<string, unknown>)) {
+        if (typeof item === 'string') workspaces[id] = item
+      }
+    }
+    return { enabled: value?.enabled !== false, text, workspaces }
   }
 
   // 设置面板卡片(namespace prompt-inject)。
@@ -88,14 +155,20 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   // 唯一注入通道:所有 agent 的 pre-step——本步认领到"新输入"时追加一条
   // (inbox 认领是消费式:每条输入恰好被一个 step 认领,天然不重复)。
-  ctx.on('agent/pre-step', async (_payload, next) => {
+  // 文本 = 全局 + 本会话 cwd 所属工作区的附加,合并为一条。
+  ctx.on('agent/pre-step', async (payload, next) => {
     const downstream = await next()
-    const { enabled, text } = read()
-    if (!enabled || text.length === 0) return downstream
+    const { enabled, text, workspaces } = read()
+    if (!enabled) return downstream
     if (downstream.kind !== 'enter') return downstream
     if (!hasNewInput(downstream.messages)) return downstream
+    const cwd = (payload as { agent?: { session?: { header?: { cwd?: string } } } })
+      .agent?.session?.header?.cwd
+    const workspaceText = await workspaceTextFor(ctx, workspaces, cwd)
+    const merged = joinSections(text, workspaceText)
+    if (merged.length === 0) return downstream
     const ours = createUserMessage({
-      content: [{ type: 'text', text }],
+      content: [{ type: 'text', text: merged }],
       source: PLUGIN_SOURCE as never,
     })
     return { ...downstream, messages: [...downstream.messages, ours] }
