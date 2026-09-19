@@ -131,6 +131,21 @@ describe('dsh-prompt-inject:注册与基础语义', () => {
     expect(text).toContain('</system-reminder>')
   })
 
+  it('注入排在真实用户消息之前(否则模型把注入当成"用户最新发言")', async () => {
+    // 回归:注入若 append 在真实消息之后,模型回看时把最后一条 user 消息
+    // (=注入)当成"用户的最新发言",真实消息被盖住(实测:用户插队消息被
+    // 误读为"只包含全局指令提醒,没有实质内容"而搁置)。
+    const { preStep } = setup({ settings: { enabled: true, text: 'X 规则' } })
+    const { messages, injected } = await runPreStep(preStep, [userMessage('u1', '真实提问')])
+    expect(injected).toHaveLength(1)
+    expect(messages).toHaveLength(2)
+    const textOf = (m: Message): string =>
+      (m.content as { type: string; text?: string }[]).filter(b => b.type === 'text').map(b => b.text ?? '').join('')
+    expect(textOf(messages[0]!)).toContain('automated context')
+    expect(textOf(messages[0]!)).toContain('X 规则')
+    expect(textOf(messages[1]!)).toBe('真实提问')
+  })
+
   it('只认领到工具结果 → 不注入(回归:不再每次工具调用后重复注入)', async () => {
     const { preStep } = setup({ settings: { enabled: true, text: 'X 规则' } })
     expect((await runPreStep(preStep, [toolResultMessage('c1')])).injected).toHaveLength(0)

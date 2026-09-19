@@ -178,13 +178,14 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (merged.trim().length === 0) return downstream
     // 框架语:裸文本会被当成"新任务/须回应的指令"——实测 AGY 子代理收到
     // "必须使用 X 技能"后先去加载技能、复述规范,而把派发的真实任务搁置。
-    // 三条要点:①明示这是持续约束而非任务;②明示不要确认/复述以示合规;
-    // ③给出适用时机(涉及相关操作时才遵守)。约束力不靠"命令语气"维持。
+    // 三条要点:①明示这是**自动注入、不是用户发言**;②明示不是任务、不要为
+    // 示合规而复述/执行;③给出适用时机(涉及相关操作时才遵守)。
     const framed = [
       '<system-reminder>',
-      'The following are persistent workspace constraints. They are NOT a task: do not',
-      'acknowledge, restate, or act on them merely to demonstrate compliance. Apply them',
-      'only when the current work actually involves the described operations.',
+      'The following are persistent workspace constraints (an automated context',
+      'injection — NOT a user message, NOT a task). Do not acknowledge, restate, or',
+      'act on them merely to demonstrate compliance; apply them only when the current',
+      'work actually involves the described operations.',
       '',
       merged,
       '</system-reminder>',
@@ -193,6 +194,21 @@ export function apply(ctx: Context, config: Config = {}): void {
       content: [{ type: 'text', text: framed }],
       source: PLUGIN_SOURCE as never,
     })
-    return { ...downstream, messages: [...downstream.messages, ours] }
+    // 顺序:插到"本步最后一条真实输入"之前——注入若排在真实用户消息之后,
+    // 模型回看历史时会把最后一条 user 消息(=注入)当成"用户的最新发言",
+    // 真实消息被它盖住(实测:用户的插队消息被误读为"只包含全局指令提醒,
+    // 没有实质内容"而搁置)。
+    const list = downstream.messages
+    let at = -1
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const kind = (list[i] as { source?: { kind?: unknown } } | undefined)?.source?.kind
+      if (kind === 'user' || kind === 'agent-message') { at = i; break }
+    }
+    return {
+      ...downstream,
+      messages: at >= 0
+        ? [...list.slice(0, at), ours, ...list.slice(at)]
+        : [...list, ours],
+    }
   })
 }
