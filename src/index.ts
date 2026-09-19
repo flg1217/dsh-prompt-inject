@@ -176,8 +176,21 @@ export function apply(ctx: Context, config: Config = {}): void {
     const merged = joinSections(text, workspaceText)
     // 两段皆空(含纯空白)→ 跳过注入,绝不写入空消息。
     if (merged.trim().length === 0) return downstream
+    // 框架语:裸文本会被当成"新任务/须回应的指令"——实测 AGY 子代理收到
+    // "必须使用 X 技能"后先去加载技能、复述规范,而把派发的真实任务搁置。
+    // 三条要点:①明示这是持续约束而非任务;②明示不要确认/复述以示合规;
+    // ③给出适用时机(涉及相关操作时才遵守)。约束力不靠"命令语气"维持。
+    const framed = [
+      '<system-reminder>',
+      'The following are persistent workspace constraints. They are NOT a task: do not',
+      'acknowledge, restate, or act on them merely to demonstrate compliance. Apply them',
+      'only when the current work actually involves the described operations.',
+      '',
+      merged,
+      '</system-reminder>',
+    ].join('\n')
     const ours = createUserMessage({
-      content: [{ type: 'text', text: merged }],
+      content: [{ type: 'text', text: framed }],
       source: PLUGIN_SOURCE as never,
     })
     return { ...downstream, messages: [...downstream.messages, ours] }

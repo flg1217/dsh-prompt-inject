@@ -123,6 +123,12 @@ describe('dsh-prompt-inject:注册与基础语义', () => {
     const text = injectedText(injected)
     expect(text).toContain('【全局指令】')
     expect(text).toContain('每条回复末尾加"喵"')
+    // 框架语(2026-09-19):把注入声明为"持续约束、不是任务",并明示不要为
+    // 示合规而复述/执行它——裸文本会被子代理当成任务(实测 AGY 先去加载
+    // 技能、复述规范而不执行派发的任务)。
+    expect(text).toContain('<system-reminder>')
+    expect(text).toContain('NOT a task')
+    expect(text).toContain('</system-reminder>')
   })
 
   it('只认领到工具结果 → 不注入(回归:不再每次工具调用后重复注入)', async () => {
