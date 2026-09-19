@@ -157,6 +157,26 @@ describe('dsh-prompt-inject:注册与基础语义', () => {
     expect(injected).toHaveLength(1)
     expect(injectedText(injected)).toContain('行内配置规则')
   })
+
+  it('settings 服务在场:空串/null/异常类型一律当空,不回退行内 config(防阴魂不散)', async () => {
+    // text 显式空串(面板清空)→ 跳过,不注入行内 config 的旧值。
+    const empty = setup({ settings: { enabled: true, text: '' }, registry: {} })
+    expect((await runPreStep(empty.preStep, [userMessage('u1', 'hi')])).injected).toHaveLength(0)
+    // text 为 null(手工编辑 YAML 的裸键)→ 跳过。
+    const nulled = setup({ settings: { enabled: true, text: null as never }, registry: {} })
+    expect((await runPreStep(nulled.preStep, [userMessage('u1', 'hi')])).injected).toHaveLength(0)
+    // text 为异常类型(数字)→ 跳过。
+    const odd = setup({ settings: { enabled: true, text: 3 as never }, registry: {} })
+    expect((await runPreStep(odd.preStep, [userMessage('u1', 'hi')])).injected).toHaveLength(0)
+    // workspaces 值全为空白 → 仅全局生效,不产生【工作区指令】段。
+    const blankWs = setup({
+      settings: { enabled: true, text: 'G', workspaces: { 'ws-1': '   ' } },
+      registry: { resolved: { id: 'ws-1' } },
+    })
+    const text = injectedText((await runPreStep(blankWs.preStep, [userMessage('u1', 'hi')], 'D:/x')).injected)
+    expect(text).toContain('G')
+    expect(text).not.toContain('【工作区指令】')
+  })
 })
 
 describe('dsh-prompt-inject:工作区级注入', () => {

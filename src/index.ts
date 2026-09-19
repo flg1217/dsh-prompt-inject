@@ -126,13 +126,21 @@ function joinSections(globalText: string, workspaceText: string): string {
 }
 
 export function apply(ctx: Context, config: Config = {}): void {
-  /** 当前生效配置:面板设置优先,回退插件行内 config(逐值防御手工编辑)。 */
+  /**
+   * 当前生效配置。契约(重要,防"面板清空后旧值阴魂不散"):
+   * - settings 服务在场 → **只信 settings** 的解析结果(空串/缺省/异常类型一律
+   *   当作空,不回退行内 config;字符串才采用);
+   * - settings 服务整体缺失(如最小部署/测试) → 才回退行内 config。
+   */
   const read = (): EffectiveConfig => {
     const settings = ctx.get('settings') as
-      | { get?: (ns: string) => { enabled?: boolean; text?: string; workspaces?: unknown } | undefined }
+      | { get?: (ns: string) => { enabled?: unknown; text?: unknown; workspaces?: unknown } | undefined }
       | undefined
     const value = settings?.get?.(PROMPT_INJECT_NAMESPACE)
-    const text = (value?.text ?? config.text ?? '').trim()
+    const text = (settings === undefined
+      ? typeof config.text === 'string' ? config.text : ''
+      : typeof value?.text === 'string' ? value.text : ''
+    ).trim()
     const workspaces: Record<string, string> = {}
     if (value?.workspaces !== null && typeof value?.workspaces === 'object') {
       for (const [id, item] of Object.entries(value.workspaces as Record<string, unknown>)) {
@@ -166,7 +174,8 @@ export function apply(ctx: Context, config: Config = {}): void {
       .agent?.session?.header?.cwd
     const workspaceText = await workspaceTextFor(ctx, workspaces, cwd)
     const merged = joinSections(text, workspaceText)
-    if (merged.length === 0) return downstream
+    // 两段皆空(含纯空白)→ 跳过注入,绝不写入空消息。
+    if (merged.trim().length === 0) return downstream
     const ours = createUserMessage({
       content: [{ type: 'text', text: merged }],
       source: PLUGIN_SOURCE as never,
