@@ -28,6 +28,10 @@
       "platform": "web"
     }
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flg1217/dsh-prompt-inject.git"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
