@@ -36,7 +36,14 @@ window.__ModuleLoader__.load({
       wsTitle: '.dshPI_wsTitle{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       wsPath: '.dshPI_wsPath{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       wsOrphan: '.dshPI_wsOrphan{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:1.5}',
-      modalBody: '.dshPI_modalBody{display:flex;flex-direction:column;gap:10px;min-width:min(560px,72vw)}',
+      // 弹窗卡片宽度:primitives 的 Modal 卡固定 min(380px,100%)+overflow:hidden,
+      // 而编辑弹窗内容(路径/长文本/textarea)需要更宽——用 Modal 的 className
+      // 加宽卡片本体(官方支持的入口),绝不靠撑大 body 内容(min-width 会把内容
+      // 顶出卡片、被 overflow:hidden 裁掉;2026-09-19 用户截图实证)。
+      wideDialog: '.dshPI_wideDialog{width:min(560px,100%)}',
+      // 弹窗内路径行:长路径换行显示(卡片级 wsPath 是窄列单行省略,这里不适用)。
+      modalPath: '.dshPI_modalPath{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;word-break:break-all}',
+      modalBody: '.dshPI_modalBody{display:flex;flex-direction:column;gap:10px;width:100%;min-width:0}',
     }
     const cssText = Object.values(CSS).join('')
     const tagId = '@flg1217/dsh-prompt-inject/plugin-card.css'
@@ -55,7 +62,7 @@ window.__ModuleLoader__.load({
       hint: 'dshPI_hint', textarea: 'dshPI_textarea', row: 'dshPI_row', note: 'dshPI_note',
       badge: 'dshPI_badge', wsRow: 'dshPI_wsRow', wsText: 'dshPI_wsText',
       wsTitle: 'dshPI_wsTitle', wsPath: 'dshPI_wsPath', wsOrphan: 'dshPI_wsOrphan',
-      modalBody: 'dshPI_modalBody',
+      wideDialog: 'dshPI_wideDialog', modalPath: 'dshPI_modalPath', modalBody: 'dshPI_modalBody',
     }
 
     /** 从 settings 现值取某工作区的注入文本(防御非 string)。 */
@@ -117,6 +124,7 @@ window.__ModuleLoader__.load({
         onClose,
         title: `工作区注入:${workspaceTitle ?? ''}`,
         closeLabel: '关闭',
+        className: C.wideDialog,
         footer: react.createElement(react.Fragment, null,
           react.createElement(Button, { size: 'md', onClick: save }, '保存'),
           react.createElement(Button, { size: 'md', variant: 'ghost', onClick: clear }, '清除'),
@@ -125,7 +133,7 @@ window.__ModuleLoader__.load({
       },
         react.createElement('div', { className: C.modalBody },
           workspacePath !== undefined && workspacePath !== ''
-            ? react.createElement('div', { className: C.wsPath }, workspacePath)
+            ? react.createElement('div', { className: C.modalPath }, workspacePath)
             : null,
           react.createElement('textarea', {
             className: C.textarea,
