@@ -9,8 +9,8 @@
  * - codebuddy 桥的原生同类工具已并入 dsh 通道(Bash/Edit/… 白名单硬移除、
  *   子代理强引导走 dsh_subagent),codebuddy/deepseek 也不再走 system
  *   section——保持单一机制,少一条平行实现;
- * - 注入消息 source={kind:'plugin',plugin:'prompt-inject'},在会话界面以
- *   "上下文注入"卡片呈现,不进普通对话流;
+ * - 注入消息 source={kind:'prompt-inject',form:'notice',summary:'上下文注入'},
+ *   在会话界面以折叠行呈现,不进普通对话流;
  * - **时机**(读 dsh 源码后修正,2026-09-18):pre-step 的 messages 是**本步
  *   从 inbox 认领的新消息**,不是完整历史——判定=**认领到真实输入就注入**
  *   (kind=user 用户消息 / kind=agent-message 父代理派发)。inbox 认领是
@@ -30,6 +30,7 @@
  */
 import type { Context, Volatile } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
+import type { ContextFormed } from '@deepseek-ai/dsh-llm';
 export declare const PROMPT_INJECT_NAMESPACE = "prompt-inject";
 /** 设置输入面(profile patch 条目 config / 表单写入的原始值;缺省走 schema 默认)。 */
 export interface PromptInjectInput {
@@ -45,4 +46,21 @@ export interface Config {
 }
 /** 设置表单 schema(条目 id `prompt-inject`)。显式 z<S,T> 注解:z.dict 的推断类型不可移植(TS2742)。 */
 export declare const Config: z<PromptInjectInput, Config>;
+/**
+ * 本插件注入消息的 source。
+ *
+ * 0.2.1 起 `MessageSourceMap` 是 merge-extensible 的:每个生产者在自己的
+ * 模块里声明 kind,通用的 `'plugin'` 兜底已退役——会话格式 v4 的准入校验
+ * (session-format-v3-to-v4 message-sources)明确拒绝 `kind: 'plugin'`,
+ * 保留旧值会让**每个回合**的注入消息都被拒("format v4 message requires a
+ * producer-owned source kind",0.2.1 升级实测)。UI 按
+ * `form: 'notice' + summary` 渲染折叠行,与 kind 无关。
+ */
+declare module '@deepseek-ai/dsh-llm' {
+    interface MessageSourceMap {
+        'prompt-inject': {
+            kind: 'prompt-inject';
+        } & ContextFormed;
+    }
+}
 export declare function apply(ctx: Context, config: Config): void;

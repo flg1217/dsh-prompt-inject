@@ -9,8 +9,8 @@
  * - codebuddy 桥的原生同类工具已并入 dsh 通道(Bash/Edit/… 白名单硬移除、
  *   子代理强引导走 dsh_subagent),codebuddy/deepseek 也不再走 system
  *   section——保持单一机制,少一条平行实现;
- * - 注入消息 source={kind:'plugin',plugin:'prompt-inject'},在会话界面以
- *   "上下文注入"卡片呈现,不进普通对话流;
+ * - 注入消息 source={kind:'prompt-inject',form:'notice',summary:'上下文注入'},
+ *   在会话界面以折叠行呈现,不进普通对话流;
  * - **时机**(读 dsh 源码后修正,2026-09-18):pre-step 的 messages 是**本步
  *   从 inbox 认领的新消息**,不是完整历史——判定=**认领到真实输入就注入**
  *   (kind=user 用户消息 / kind=agent-message 父代理派发)。inbox 认领是
@@ -32,7 +32,7 @@
 import type { Context, Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { Message } from '@deepseek-ai/dsh-llm'
+import type { ContextFormed, Message } from '@deepseek-ai/dsh-llm'
 // 触发 agent/* 事件的 cordis 类型声明合并(类型专用导入)。
 import type {} from '@deepseek-ai/dsh-agent'
 // settings 服务类型声明合并(configure({ auto: false }) 用;类型专用导入)。
@@ -63,8 +63,28 @@ export const Config: z<PromptInjectInput, Config> = z.object({
     .volatile(),
 })
 
+/**
+ * 本插件注入消息的 source。
+ *
+ * 0.2.1 起 `MessageSourceMap` 是 merge-extensible 的:每个生产者在自己的
+ * 模块里声明 kind,通用的 `'plugin'` 兜底已退役——会话格式 v4 的准入校验
+ * (session-format-v3-to-v4 message-sources)明确拒绝 `kind: 'plugin'`,
+ * 保留旧值会让**每个回合**的注入消息都被拒("format v4 message requires a
+ * producer-owned source kind",0.2.1 升级实测)。UI 按
+ * `form: 'notice' + summary` 渲染折叠行,与 kind 无关。
+ */
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'prompt-inject': { kind: 'prompt-inject' } & ContextFormed
+  }
+}
+
 /** 注入消息的插件标记(代际检测与调试识别)。 */
-const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'prompt-inject' } as const
+const PLUGIN_SOURCE = {
+  kind: 'prompt-inject',
+  form: 'notice',
+  summary: '上下文注入',
+} as const
 
 /**
  * 本步认领的新消息里是否含"新输入"?——pre-step 的 messages 是**本步从
@@ -78,8 +98,12 @@ const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'prompt-inject' } as const
  */
 function hasNewInput(messages: readonly Message[]): boolean {
   return messages.some(message => {
-    const kind = message.source.kind as string
-    return message.role === 'user' && (kind === 'user' || kind === 'agent-message')
+    // 0.2.1 起 RequestUserInput(如压缩旁路追加的指令)无 source——解引用
+    // message.source.kind 会抛错,且无 source 的 user 消息仍是真实输入,
+    // 必须算数(否则压缩旁路调用漏注入,见 dsh-0.2.1 迁移笔记)。
+    const kind = message.source?.kind as string | undefined
+    return message.role === 'user'
+      && (kind === undefined || kind === 'user' || kind === 'agent-message')
   })
 }
 
@@ -185,7 +209,7 @@ export function apply(ctx: Context, config: Config): void {
     ].join('\n')
     const ours = createUserMessage({
       content: [{ type: 'text', text: framed }],
-      source: PLUGIN_SOURCE as never,
+      source: PLUGIN_SOURCE,
     })
     // 顺序:插到"本步最后一条真实输入"之前——注入若排在真实用户消息之后,
     // 模型回看历史时会把最后一条 user 消息(=注入)当成"用户的最新发言",
