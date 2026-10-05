@@ -1,4 +1,4 @@
-// 提示词注入插件面板卡片(注册 settings.plugin.item,外观对齐官方 PluginCard)。
+// 提示词注入插件面板卡片(注册 settings.plugins.tab,外观对齐官方 PluginCard)。
 // 字段读写走官方 SettingsScope;注入行为:每条输入随行下发,主对话与所有
 // 子代理统一(host 侧 pre-step 实现)。
 // 文本 = 全局(本卡) + 每工作区附加(工作区管理区,键=workspaceId);
@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
     const exports = module.exports
     const react = require('react')
     const P = require('@deepseek-ai/dsh-client-ui-primitives')
-    const { Button, Modal, IconChevronDownOutline14 } = P
+    const { Button, Modal, IconChevronDownOutlineMedium } = P
 
     // ── 官方 PluginCard CSS 子集(与 ui-settings-plugins 视觉一致) ──
     const CSS = {
@@ -231,7 +231,7 @@ window.__ModuleLoader__.load({
             react.createElement('span', { className: C.description },
               '全局 + 每工作区附加指令,随每条输入下发(主对话与所有子代理统一)'),
           ),
-          react.createElement(IconChevronDownOutline14, { className: `${C.chevron} ${open ? C.chevronOpen : ''}` }),
+          react.createElement(IconChevronDownOutlineMedium, { className: `${C.chevron} ${open ? C.chevronOpen : ''}` }),
         ),
         open && react.createElement('div', { className: C.body },
           // 总开关
@@ -311,25 +311,24 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
-      const scope = ctx.settingsScope.bind({ namespace: 'prompt-inject' })
+      // 0.2.1:settingsScope 已移除;配置表单经 configForms 按 profile 条目 id 取用。
+      const scope = ctx.configForms.get('prompt-inject')
       const sectionInject = () => ({ scope })
       ctx.effect(() => {
-        return ctx.slots.inject('settings.plugin.item', () => {
+        return ctx.slots.inject('settings.plugins.tab', () => {
           return ctx.slots.register({
-            name: 'settings.plugin.item',
-            // id(rc.6 list 槽)与 key(rc.7 keyed 槽)都传,兼容两种槽类型。
+            name: 'settings.plugins.tab',
             id: 'prompt-inject',
-            key: 'prompt-inject',
             order: 40,
             label: () => '提示词注入',
             inject: sectionInject,
           }, PromptInjectCard)
         })
-      }, 'prompt-inject-client: settings.plugin.item')
+      }, 'prompt-inject-client: settings.plugins.tab')
     }
 
     exports.apply = apply
-    exports.inject = ['slots', 'settingsScope']
+    exports.inject = ['slots', 'configForms']
     exports.name = 'prompt-inject-client'
     return module.exports
   },

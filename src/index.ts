@@ -18,7 +18,8 @@
  *   多步工具循环(tool 结果 kind=tool)不再注入(此前按"扫历史找注入标记"
  *   判定恒真,导致每次工具调用后都重复注入——实测回归)。
  *
- * 设置(namespace `prompt-inject`,面板实时生效):
+ * 设置(profile 条目 id `prompt-inject`,面板实时生效;0.2.1 起字段即
+ * 设置表单——全部标 `.volatile()`,插件直接持有活引用读取):
  * - enabled:总开关(默认开);
  * - text:全局注入文本(留空不注入);
  * - workspaces:每工作区附加文本(键=workspaceId;host 按本会话 cwd 经
@@ -28,34 +29,39 @@
  * @module dsh-prompt-inject
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Message } from '@deepseek-ai/dsh-llm'
 // 触发 agent/* 事件的 cordis 类型声明合并(类型专用导入)。
 import type {} from '@deepseek-ai/dsh-agent'
+// settings 服务类型声明合并(configure({ auto: false }) 用;类型专用导入)。
+import type {} from '@deepseek-ai/dsh-settings'
 
 export const PROMPT_INJECT_NAMESPACE = 'prompt-inject'
 
-/** 设置值的结构化面(namespace `prompt-inject`)。 */
-export interface PromptInjectSettings {
-  enabled: boolean
-  text: string
-  workspaces: Record<string, string>
-}
-
-/** 设置表单 schema(namespace `prompt-inject`)。显式 z<T> 注解:z.dict 的推断类型不可移植(TS2742)。 */
-export const PromptInjectConfig: z<PromptInjectSettings> = z.object({
-  enabled: z.boolean().default(true).description('启用全局提示词注入'),
-  text: z.string().default('').description('全局注入文本:对所有会话生效(留空不注入)'),
-  workspaces: z.dict(z.string()).default({})
-    .description('工作区附加注入:键为 workspaceId,值为该工作区附加指令(留空=无附加)'),
-})
-
-export interface Config {
-  /** 兼容字段:插件行内配置(面板设置优先)。 */
+/** 设置输入面(profile patch 条目 config / 表单写入的原始值;缺省走 schema 默认)。 */
+export interface PromptInjectInput {
+  enabled?: boolean
   text?: string
+  workspaces?: Record<string, string>
 }
+
+/** 本插件的设置面(profile 条目 id = `prompt-inject`)。 */
+export interface Config {
+  enabled: Volatile<boolean>
+  text: Volatile<string>
+  workspaces: Volatile<Record<string, string>>
+}
+
+/** 设置表单 schema(条目 id `prompt-inject`)。显式 z<S,T> 注解:z.dict 的推断类型不可移植(TS2742)。 */
+export const Config: z<PromptInjectInput, Config> = z.object({
+  enabled: z.boolean().default(true).description('启用全局提示词注入').volatile(),
+  text: z.string().default('').description('全局注入文本:对所有会话生效(留空不注入)').volatile(),
+  workspaces: z.dict(z.string()).default({})
+    .description('工作区附加注入:键为 workspaceId,值为该工作区附加指令(留空=无附加)')
+    .volatile(),
+})
 
 /** 注入消息的插件标记(代际检测与调试识别)。 */
 const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'prompt-inject' } as const
@@ -77,7 +83,7 @@ function hasNewInput(messages: readonly Message[]): boolean {
   })
 }
 
-/** 当前生效设置的面(从 settings namespace 现值 + 行内回退)。 */
+/** 当前生效设置的面(从 volatile 活引用读取)。 */
 interface EffectiveConfig {
   enabled: boolean
   text: string
@@ -125,40 +131,24 @@ function joinSections(globalText: string, workspaceText: string): string {
   return parts.join('\n\n')
 }
 
-export function apply(ctx: Context, config: Config = {}): void {
+export function apply(ctx: Context, config: Config): void {
   /**
-   * 当前生效配置。契约(重要,防"面板清空后旧值阴魂不散"):
-   * - settings 服务在场 → **只信 settings** 的解析结果(空串/缺省/异常类型一律
-   *   当作空,不回退行内 config;字符串才采用);
-   * - settings 服务整体缺失(如最小部署/测试) → 才回退行内 config。
+   * 当前生效配置(每次注入实时读取活引用;面板写入即时可见)。
+   * 值由 schema 校验保证类型:enabled/text 必为 boolean/string,
+   * workspaces 为 string→string 字典(逐键再防御一次,丢弃非串值)。
    */
   const read = (): EffectiveConfig => {
-    const settings = ctx.get('settings') as
-      | { get?: (ns: string) => { enabled?: unknown; text?: unknown; workspaces?: unknown } | undefined }
-      | undefined
-    const value = settings?.get?.(PROMPT_INJECT_NAMESPACE)
-    const text = (settings === undefined
-      ? typeof config.text === 'string' ? config.text : ''
-      : typeof value?.text === 'string' ? value.text : ''
-    ).trim()
     const workspaces: Record<string, string> = {}
-    if (value?.workspaces !== null && typeof value?.workspaces === 'object') {
-      for (const [id, item] of Object.entries(value.workspaces as Record<string, unknown>)) {
-        if (typeof item === 'string') workspaces[id] = item
-      }
+    for (const [id, item] of Object.entries(config.workspaces.get())) {
+      if (typeof item === 'string') workspaces[id] = item
     }
-    return { enabled: value?.enabled !== false, text, workspaces }
+    return { enabled: config.enabled.get(), text: config.text.get().trim(), workspaces }
   }
 
-  // 设置面板卡片(namespace prompt-inject)。
-  ctx.inject(['settings'], (settingsCtx) => {
-    const settings = settingsCtx.get('settings') as {
-      installSection?: (owner: Context, ns: string, schema: unknown, entry: unknown, hooks: unknown) => void
-    } | undefined
-    settings?.installSection?.(ctx, PROMPT_INJECT_NAMESPACE, PromptInjectConfig, {}, {
-      setSource: () => { /* 读取走 settings.get,无需缓存源 */ },
-      onChange: () => { /* 每次注入实时读取 */ },
-    })
+  // 设置面板:本插件自带页面(客户端 settings.plugins.tab),关掉按 schema
+  // 自动生成表单的策略(0.2.1 起替代旧 installSection;策略不移除配置读写)。
+  ctx.inject(['settings'], (child) => {
+    child.effect(() => child.settings.configure({ auto: false }, ctx.fiber))
   })
 
   // 唯一注入通道:所有 agent 的 pre-step——本步认领到"新输入"时追加一条

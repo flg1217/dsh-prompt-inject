@@ -18,7 +18,8 @@
  *   多步工具循环(tool 结果 kind=tool)不再注入(此前按"扫历史找注入标记"
  *   判定恒真,导致每次工具调用后都重复注入——实测回归)。
  *
- * 设置(namespace `prompt-inject`,面板实时生效):
+ * 设置(profile 条目 id `prompt-inject`,面板实时生效;0.2.1 起字段即
+ * 设置表单——全部标 `.volatile()`,插件直接持有活引用读取):
  * - enabled:总开关(默认开);
  * - text:全局注入文本(留空不注入);
  * - workspaces:每工作区附加文本(键=workspaceId;host 按本会话 cwd 经
@@ -27,19 +28,21 @@
  *   (【全局指令】/【工作区指令】小标题区分),两段皆空则不注入。
  * @module dsh-prompt-inject
  */
-import type { Context } from '@deepseek-ai/cordis';
+import type { Context, Volatile } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 export declare const PROMPT_INJECT_NAMESPACE = "prompt-inject";
-/** 设置值的结构化面(namespace `prompt-inject`)。 */
-export interface PromptInjectSettings {
-    enabled: boolean;
-    text: string;
-    workspaces: Record<string, string>;
-}
-/** 设置表单 schema(namespace `prompt-inject`)。显式 z<T> 注解:z.dict 的推断类型不可移植(TS2742)。 */
-export declare const PromptInjectConfig: z<PromptInjectSettings>;
-export interface Config {
-    /** 兼容字段:插件行内配置(面板设置优先)。 */
+/** 设置输入面(profile patch 条目 config / 表单写入的原始值;缺省走 schema 默认)。 */
+export interface PromptInjectInput {
+    enabled?: boolean;
     text?: string;
+    workspaces?: Record<string, string>;
 }
-export declare function apply(ctx: Context, config?: Config): void;
+/** 本插件的设置面(profile 条目 id = `prompt-inject`)。 */
+export interface Config {
+    enabled: Volatile<boolean>;
+    text: Volatile<string>;
+    workspaces: Volatile<Record<string, string>>;
+}
+/** 设置表单 schema(条目 id `prompt-inject`)。显式 z<S,T> 注解:z.dict 的推断类型不可移植(TS2742)。 */
+export declare const Config: z<PromptInjectInput, Config>;
+export declare function apply(ctx: Context, config: Config): void;
