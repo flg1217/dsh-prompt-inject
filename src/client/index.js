@@ -1,7 +1,7 @@
-// 提示词注入插件面板卡片(注册 settings.plugins.tab,外观对齐官方 PluginCard)。
-// 字段读写走官方 SettingsScope;注入行为:每条输入随行下发,主对话与所有
-// 子代理统一(host 侧 pre-step 实现)。
-// 文本 = 全局(本卡) + 每工作区附加(工作区管理区,键=workspaceId);
+// 提示词注入插件设置(注册 plugins.item,进「内置插件 → 插件列表」条目详情,
+// 与官方 subagent/shell 设置页同机制)。字段读写走官方 configForms;
+// 注入行为:每条输入随行下发,主对话与所有子代理统一(host 侧 pre-step 实现)。
+// 文本 = 全局(本页) + 每工作区附加(键=workspaceId);
 // host 按会话 cwd 经 workspaceRegistry.resolveByPath 匹配后合并为一条注入。
 window.__ModuleLoader__.load({
   id: '@flg1217/dsh-prompt-inject',
@@ -10,19 +10,11 @@ window.__ModuleLoader__.load({
     const exports = module.exports
     const react = require('react')
     const P = require('@deepseek-ai/dsh-client-ui-primitives')
-    const { Button, Modal, IconChevronDownOutlineMedium } = P
+    const { Button, Modal } = P
 
-    // ── 官方 PluginCard CSS 子集(与 ui-settings-plugins 视觉一致) ──
+    // ── 设置页 CSS(plugins.item 详情页;字段沿用官方 PluginCard 视觉) ──
     const CSS = {
-      card: '.dshPI_card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}',
-      cardOpen: '.dshPI_cardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}',
-      header: '.dshPI_header{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}',
-      headText: '.dshPI_headText{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}',
-      name: '.dshPI_name{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}',
-      description: '.dshPI_description{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}',
-      chevron: '.dshPI_chevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}',
-      chevronOpen: '.dshPI_chevronOpen{transform:rotate(180deg)}',
-      body: '.dshPI_body{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding-bottom:8px}',
+      page: '.dshPI_page{display:flex;flex-direction:column}',
       field: '.dshPI_field{flex-direction:column;gap:6px;padding:12px 0;display:flex}.dshPI_field+.dshPI_field{border-top:1px solid var(--dsw-alias-border-l2)}',
       fieldHead: '.dshPI_fieldHead{align-items:center;gap:8px;display:flex}',
       label: '.dshPI_label{min-width:0;color:var(--dsw-alias-label-primary);flex:1;font-size:13px;font-weight:500;line-height:1.5}',
@@ -55,9 +47,7 @@ window.__ModuleLoader__.load({
       document.head.appendChild(tag)
     }
     const C = {
-      card: 'dshPI_card', cardOpen: 'dshPI_cardOpen', header: 'dshPI_header',
-      headText: 'dshPI_headText', name: 'dshPI_name', description: 'dshPI_description',
-      chevron: 'dshPI_chevron', chevronOpen: 'dshPI_chevronOpen', body: 'dshPI_body',
+      page: 'dshPI_page',
       field: 'dshPI_field', fieldHead: 'dshPI_fieldHead', label: 'dshPI_label',
       hint: 'dshPI_hint', textarea: 'dshPI_textarea', row: 'dshPI_row', note: 'dshPI_note',
       badge: 'dshPI_badge', wsRow: 'dshPI_wsRow', wsText: 'dshPI_wsText',
@@ -147,9 +137,12 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** 提示词注入设置卡:总开关 + 全局文本 + 每工作区注入管理。 */
+    /** 提示词注入设置页(plugins.item):总开关 + 全局文本 + 每工作区注入管理。 */
     function PromptInjectCard(props) {
-      const [open, setOpen] = react.useState(false)
+      // 列表摘要视图:一句话(官方 ItemCard 的 description 渲染此返回值)。
+      if (props.view === 'summary') {
+        return '全局 + 每工作区附加指令,随每条输入下发(主对话与所有子代理统一)'
+      }
       const scope = props.scope
       const [enabled, setEnabled] = react.useState(true)
       const [textDraft, setTextDraft] = react.useState('')
@@ -220,20 +213,7 @@ window.__ModuleLoader__.load({
         } catch { /* 同上 */ }
       }, [scope, orphans.join('\n')])
 
-      return react.createElement('li', { className: `${C.card} ${open ? C.cardOpen : ''}` },
-        react.createElement('button', {
-          type: 'button', className: C.header, 'aria-expanded': open,
-          'aria-label': `${open ? '收起' : '展开'}: 提示词注入`,
-          onClick: () => setOpen(!open),
-        },
-          react.createElement('span', { className: C.headText },
-            react.createElement('span', { className: C.name }, '提示词注入'),
-            react.createElement('span', { className: C.description },
-              '全局 + 每工作区附加指令,随每条输入下发(主对话与所有子代理统一)'),
-          ),
-          react.createElement(IconChevronDownOutlineMedium, { className: `${C.chevron} ${open ? C.chevronOpen : ''}` }),
-        ),
-        open && react.createElement('div', { className: C.body },
+      return react.createElement('div', { className: C.page },
           // 总开关
           react.createElement('div', { className: C.field },
             react.createElement('div', { className: C.fieldHead },
@@ -298,7 +278,6 @@ window.__ModuleLoader__.load({
             react.createElement('p', { className: C.hint },
               '工作区文本只对属于该工作区的会话生效(含其子代理);host 按会话 cwd 匹配工作区。'),
           ),
-        ),
         editing !== null && react.createElement(WorkspaceInjectModal, {
           open: true,
           scope,
@@ -312,19 +291,20 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       // 0.2.1:settingsScope 已移除;配置表单经 configForms 按 profile 条目 id 取用。
+      // plugins.item 条目:id 即「插件列表」条目 id(order 排官方 shell/subagent/web-search 之后)。
       const scope = ctx.configForms.get('prompt-inject')
       const sectionInject = () => ({ scope })
       ctx.effect(() => {
-        return ctx.slots.inject('settings.plugins.tab', () => {
+        return ctx.slots.inject('plugins.item', () => {
           return ctx.slots.register({
-            name: 'settings.plugins.tab',
+            name: 'plugins.item',
             id: 'prompt-inject',
-            order: 40,
+            order: 50,
             label: () => '提示词注入',
             inject: sectionInject,
           }, PromptInjectCard)
         })
-      }, 'prompt-inject-client: settings.plugins.tab')
+      }, 'prompt-inject-client: plugins.item')
     }
 
     exports.apply = apply

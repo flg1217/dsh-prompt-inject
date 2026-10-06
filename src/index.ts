@@ -169,7 +169,7 @@ export function apply(ctx: Context, config: Config): void {
     return { enabled: config.enabled.get(), text: config.text.get().trim(), workspaces }
   }
 
-  // 设置面板:本插件自带页面(客户端 settings.plugins.tab),关掉按 schema
+  // 设置面板:本插件自带页面(客户端 plugins.item,「插件列表」条目详情),关掉按 schema
   // 自动生成表单的策略(0.2.1 起替代旧 installSection;策略不移除配置读写)。
   ctx.inject(['settings'], (child) => {
     child.effect(() => child.settings.configure({ auto: false }, ctx.fiber))
