@@ -103,7 +103,7 @@ async function runPreStep(
     async () => ({ kind: 'enter', messages: claimed }),
   )
   const injected = result.messages.filter(
-    m => (m.source as { plugin?: string }).plugin === 'prompt-inject',
+    m => (m.source as { kind?: string }).kind === 'prompt-inject',
   ) as UserMessage[]
   return { messages: result.messages, injected }
 }
